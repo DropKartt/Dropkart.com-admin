@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DropKart Admin</title><link rel="stylesheet" href="shared.css"><meta name="robots" content="noindex"></head><body>
+<header><div class="bar"><div class="logo"><i>Drop</i>Kart Admin</div><span id="who"></span><a class="btn" href="index.html">View store</a></div></header>
+<main id="app"></main>
+<div id="modal"><div class="box" id="box"></div></div>
+<script src="shared.js"></script>
+<script src="auth.js"></script>
+<script>
+function setStatus(id,v){
+  const o=S.orders.find(x=>x.id==id),was=o.status;o.status=v;
+  if(v=='Cancelled'&&was!='Cancelled')o.items.forEach(i=>{const p=S.products.find(x=>x.id==i.id);if(p){p.stock+=i.qty;logm(`${o.id} cancelled: ${i.qty} x ${p.name} back in stock`)}});
+  else if(was=='Cancelled'&&v!='Cancelled')o.items.forEach(i=>{const p=S.products.find(x=>x.id==i.id);if(p){p.stock=Math.max(0,p.stock-i.qty);logm(`${o.id} reopened: ${i.qty} x ${p.name} taken from stock`)}});
+  save();toast('Status updated');
+}
+function admin(){
+  const tabs=isOwner()?[['dash','Dashboard'],['prod','Products'],['ord','Orders'],['inv','Inventory'],['team','Team & access']]:[['ord','Orders'],['inv','Inventory']];
+  if(!tabs.some(t=>t[0]==tab))tab=tabs[0][0];
+  $('#app').innerHTML=`<div class="row">${tabs.map(([k,n])=>`<button class="${tab==k?'on':'g'}" data-tab="${k}">${n}</button>`).join('')}
+   <span style="flex:1"></span>${isOwner()?'<button class="g s" data-act="reset">Reset demo data</button>':''}</div><div id="pane"></div>`;
+  $('#pane').innerHTML=({dash,prod:prods,ord:orders,inv,team})[tab]();
+}
+function dash(){
+  const o=S.orders.filter(x=>x.status!='Cancelled'), rev=o.reduce((a,x)=>a+x.total,0), pr=o.reduce((a,x)=>a+x.profit,0);
+  const open=S.orders.filter(x=>x.status=='New').length;
+  return `<div class="stats"><div class="card stat"><span class="mut">Orders</span><b>${o.length}</b></div>
+  <div class="card stat"><span class="mut">Revenue</span><b>${money(rev)}</b></div>
+  <div class="card stat"><span class="mut">Product profit</span><b class="pos">${money(pr)}</b></div>
+  <div class="card stat"><span class="mut">Waiting for supplier</span><b>${open}</b></div>
+  <div class="card stat"><span class="mut">Needs restock</span><b>${S.products.filter(p=>state(p)!='in').length}</b></div></div>
+  <div class="card"><h3>How the money flows</h3><p class="mut" style="margin:0">Customers pay your price. You pay the supplier the cost price once you forward the order. Product profit is price minus cost; shipping is shown separately in revenue.</p></div>`;
+}
+function inv(){
+  const P=S.products,out=P.filter(p=>state(p)=='out'),low=P.filter(p=>state(p)=='low');
+  return `<div class="stats">
+   <div class="card stat"><span class="mut">In stock</span><b class="pos">${P.length-out.length-low.length}</b></div>
+   <div class="card stat"><span class="mut">Low stock</span><b>${low.length}</b></div>
+   <div class="card stat"><span class="mut">Out of stock</span><b style="color:var(--bad)">${out.length}</b></div>
+   <div class="card stat"><span class="mut">Units ordered</span><b>${P.reduce((a,p)=>a+ordered(p),0)}</b></div></div>
+  ${out.length||low.length?`<div class="card alert"><b>Restock needed:</b> ${[...out,...low].map(p=>esc(p.name)+(state(p)=='out'?' (out of stock)':' ('+p.stock+' left)')).join(', ')}.</div>`:'<div class="card alert ok">All products are above their alert level.</div>'}
+  <div class="row" style="margin-top:12px"><button data-act="sync">Sync from supplier (simulated)</button><span class="mut">Refills every product at or below its alert level to 25 units.</span></div>
+  <div class="tbl"><table><tr><th>Product</th><th>Price</th><th>Qty ordered</th><th>In stock</th><th>Alert at</th><th>Status</th></tr>
+  ${P.map(p=>`<tr><td>${esc(p.emoji)} ${esc(p.name)}<br><span class="mut">${esc(p.supplier)}</span></td><td>${money(p.price)}</td><td>${ordered(p)}</td>
+   <td><input type="number" min="0" value="${p.stock}" data-stk="${p.id}" style="width:80px" aria-label="Stock for ${esc(p.name)}"></td>
+   <td><input type="number" min="0" value="${p.low}" data-low="${p.id}" style="width:70px" aria-label="Alert level for ${esc(p.name)}"></td><td>${badge(p)}</td></tr>`).join('')}</table></div>
+  <h3 style="margin-top:16px">Stock activity</h3>
+  ${S.log.length?`<div class="card">${S.log.map(l=>`<div class="mut">${new Date(l.t).toLocaleString()}: ${esc(l.m)}</div>`).join('')}</div>`:'<p class="mut">Stock changes appear here as orders come in and when you restock.</p>'}`;
+}
+function prods(){
+  return `<form id="pf" class="card row" style="align-items:end">
+   <label>Name<br><input name="name" required></label><label>Emoji<br><input name="emoji" value="📦" size="3"></label>
+   <label>Category<br><input name="cat" value="Home" required></label><label>Supplier<br><input name="sup" required></label>
+   <label>Cost $<br><input name="cost" type="number" step="0.01" min="0" required style="width:90px"></label>
+   <label>Markup %<br><input name="mk" type="number" value="150" min="0" style="width:90px"></label>
+   <label>Ship days<br><input name="days" type="number" value="8" min="1" style="width:80px"></label><label>Description<br><input name="desc" placeholder="Short description"></label><label>Stock<br><input name="stock" type="number" value="20" min="0" style="width:80px"></label><button type="submit">Add product</button></form>
+   <div class="tbl" style="margin-top:14px"><table><tr><th>Product</th><th>Supplier</th><th>Cost</th><th>Price</th><th>Margin</th><th></th></tr>
+   ${S.products.map(p=>`<tr><td>${esc(p.emoji)} ${esc(p.name)}<br><span class="mut">${esc(p.cat)}</span></td><td>${esc(p.supplier)}</td><td>${money(p.cost)}</td>
+   <td>${money(p.price)}</td><td class="pos">${((p.price-p.cost)/p.price*100).toFixed(0)}%</td><td><button class="d s" data-del="${p.id}">Delete</button></td></tr>`).join('')}</table></div>`;
+}
+function orders(){
+  if(!S.orders.length)return `<div class="card"><h3>No orders yet</h3><p class="mut">Place a test order from the Store tab and it will show up here.</p></div>`;
+  return `<div class="row"><select id="ost" aria-label="Filter by status"><option>All</option>${STATUSES.map(s=>`<option ${s==ost?'selected':''}>${s}</option>`).join('')}</select><input id="oq" type="search" placeholder="Search order, name or email" value="${esc(oq)}" style="min-width:220px"><button class="g s" data-act="csv">Export CSV</button></div><div id="otbl">${ordTable()}</div>`;
+}
+function ordTable(){
+  const l=S.orders.filter(o=>(ost=='All'||o.status==ost)&&(!oq||(o.id+o.customer.name+o.customer.email).toLowerCase().includes(oq.toLowerCase())));
+  if(!l.length)return '<p class="mut">No orders match these filters. Change the status or clear the search.</p>';
+  return `<div class="tbl"><table><tr><th>Order</th><th>Customer</th><th>Items</th><th>Total</th>${isOwner()?'<th>Profit</th>':''}<th>Status</th><th></th></tr>
+  ${l.map(o=>`<tr><td>${o.id}<br><span class="mut">${new Date(o.date).toLocaleDateString()}</span></td><td>${esc(o.customer.name)}<br><span class="mut">${esc(o.customer.email)}</span></td>
+  <td>${o.items.map(i=>`${i.qty}× ${esc(i.name)}`).join('<br>')}</td><td>${money(o.total)}</td>${isOwner()?`<td class="pos">${money(o.profit)}</td>`:''}
+  <td><select data-st="${o.id}" aria-label="Order status">${STATUSES.map(s=>`<option ${s==o.status?'selected':''}>${s}</option>`).join('')}</select></td>
+  <td><button class="s" data-po="${o.id}">Supplier order</button></td></tr>`).join('')}</table></div>`;
+}
+function po(id){
+  const o=S.orders.find(x=>x.id==id), by={};
+  o.items.forEach(i=>(by[i.supplier]=by[i.supplier]||[]).push(i));
+  const txt=Object.entries(by).map(([s,l])=>`To: ${s}\nRef: ${o.id}\n${l.map(i=>`  ${i.qty} x ${i.name} @ ${money(i.cost)}`).join('\n')}\nShip to: ${o.customer.name}, ${o.customer.addr}\nCost: ${money(l.reduce((a,i)=>a+i.cost*i.qty,0))}`).join('\n\n');
+  modal(`<h2>Supplier order</h2><p class="mut">One message per supplier. Copy it and send it, then set the order to "Ordered from supplier".</p><pre id="potxt">${esc(txt)}</pre>
+  <div class="row"><button data-act="copyPo">Copy text</button><button class="g" data-act="closeModal">Close</button></div>`);
+}
+function csv(){
+  const rows=[['order','date','customer','email','address','items','total','profit','status']].concat(S.orders.map(o=>[o.id,o.date,o.customer.name,o.customer.email,o.customer.addr,o.items.map(i=>i.qty+'x '+i.name).join('; '),o.total.toFixed(2),isOwner()?o.profit.toFixed(2):'',o.status]));
+  const b=new Blob([rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n')],{type:'text/csv'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='orders.csv';a.click();
+}
+let tab='dash',ost='All',oq='';
+window.addEventListener('storage',e=>{if(![KEY,UKEY,SKEY,GKEY].includes(e.key))return;S=load();const a=document.activeElement;if(a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName))return;boot()});
+document.addEventListener('click',e=>{
+  const t=e.target.closest('button');if(!t)return;const d=t.dataset;
+  if(d.tab){tab=d.tab;admin()}
+  else if(d.del){if(confirm('Delete this product?')){S.products=S.products.filter(p=>p.id!=d.del);delete S.cart[d.del];save();admin()}}
+  else if(d.po)po(d.po);
+  else if(d.act=='closeModal')closeModal();
+  else if(d.act=='csv')csv();
+  else if(d.act=='copyPo'){try{navigator.clipboard.writeText($('#potxt').textContent);toast('Copied')}catch(x){toast('Select the text and copy it')}}
+  else if(d.act=='sync'){let c=0;S.products.forEach(p=>{if(p.stock<=p.low){p.stock=25;c++;logm(`Supplier sync: ${p.name} restocked to 25`)}});save();admin();toast(c?`${c} product${c>1?'s':''} restocked`:'Everything is above the alert level')}
+  else if(d.act=='logout'){logout();boot()}
+  else if(d.act=='reqAccess'){requestAccess();boot()}
+  else if(d.role){setRole(d.uid,d.role);admin()}
+  else if(d.deny){denyRequest(d.deny);admin()}
+  else if(d.rm){if(confirm('Remove this account?')){removeUser(d.rm);admin()}}
+  else if(d.revg){revokeGrant(d.revg);admin()}
+  else if(d.act=='reset'){if(confirm('Reset all products, orders and stock to the demo data?')){S=seed();save();admin()}}
+});
+document.addEventListener('input',e=>{if(e.target.id=='oq'){oq=e.target.value;$('#otbl').innerHTML=ordTable()}});
+document.addEventListener('change',e=>{const i=e.target.id,n=Math.max(0,Math.floor(+e.target.value)||0);
+  if(i=='ost'){ost=e.target.value;$('#otbl').innerHTML=ordTable();return}
+  if(e.target.dataset.ur){setRole(e.target.dataset.ur,e.target.value);admin();return}
+  if(e.target.dataset.stk){const p=S.products.find(x=>x.id==e.target.dataset.stk);logm(`Manual update: ${p.name} stock ${p.stock} to ${n}`);p.stock=n;save();admin();return}
+  if(e.target.dataset.low){S.products.find(x=>x.id==e.target.dataset.low).low=n;save();admin();return}
+  if(e.target.dataset.st)setStatus(e.target.dataset.st,e.target.value)});
+document.addEventListener('submit',async e=>{
+  e.preventDefault();const f=e.target;
+  if(f.id=='lf'||f.id=='sf'){
+    const r=f.id=='lf'?await login(f.email.value,f.password.value):await setupOwner(f.name.value,f.email.value,f.password.value);
+    if(!r.ok){$('#err').textContent=r.err;return}
+    boot();
+  }
+  if(f.id=='gf'){const r=grantEmail(f.email.value,f.role.value);toast(r=='updated'?'Access updated':r=='pending'?'Access ready for when they register':'You cannot change your own role');admin()}
+  if(f.id=='pf'){
+    const cost=+f.cost.value,price=Math.floor(cost*(1+ +f.mk.value/100))+.99;
+    S.products.push({id:Date.now(),name:f.name.value,emoji:f.emoji.value||'📦',cat:f.cat.value,supplier:f.sup.value,cost,price,days:+f.days.value||8,desc:f.desc.value,feats:[],reviews:[],stock:Math.max(0,Math.floor(+f.stock.value)||0),low:5});
+    save();admin();toast('Product added');
+  }
+});
+$('#modal').addEventListener('click',e=>{if(e.target.id=='modal')closeModal()});
+function authCard(t,b){$('#app').innerHTML=`<div class="card" style="max-width:420px;margin:30px auto"><h2>${t}</h2>${b}</div>`}
+function drawWho(){const m=me();$('#who').innerHTML=m?`<span class="hi adm">${esc(m.name)} (${m.role})</span><button class="g" data-act="logout">Sign out</button>`:''}
+function boot(){
+  drawWho();const m=me();
+  if(!ownerExists())return authCard('Set up the owner account','<p class="mut">No owner exists yet. The account you create here controls who can use this dashboard.</p><form id="sf" class="af">'+fld('Full name','name')+fld('Email','email','email')+fld('Password (8+ characters)','password','password')+'<p id="err" class="err" role="alert"></p><button type="submit">Create owner account</button></form>');
+  if(!m)return authCard('Sign in','<form id="lf" class="af">'+fld('Email','email','email')+fld('Password','password','password')+'<p id="err" class="err" role="alert"></p><button type="submit">Sign in</button></form><p class="mut">No account yet? Create one in the store first, then ask the owner for access.</p>');
+  if(m.role=='customer')return authCard('No admin access',`<p>The account ${esc(m.email)} does not have admin access.</p>`+(m.request?'<p class="mut">Your request is waiting for an owner to review it.</p>':'<button data-act="reqAccess">Request access</button>'));
+  admin();
+}
+function team(){
+  const U=loadU(),G=loadG(),m=me(),req=U.filter(u=>u.request&&u.role=='customer');
+  return `${req.length?`<div class="card alert"><b>Access requests</b>${req.map(u=>`<div class="row" style="margin:8px 0 0"><span>${esc(u.name)} (${esc(u.email)})</span><button class="s" data-uid="${u.id}" data-role="staff">Approve as staff</button><button class="s" data-uid="${u.id}" data-role="owner">Approve as owner</button><button class="g s" data-deny="${u.id}">Deny</button></div>`).join('')}</div>`:''}
+  <form id="gf" class="card row" style="align-items:end"><label>Give access by email<br><input name="email" type="email" required placeholder="name@example.com"></label>
+   <label>Role<br><select name="role"><option value="staff">Staff</option><option value="owner">Owner</option></select></label><button type="submit">Give access</button></form>
+  ${G.length?`<div class="card" style="margin-bottom:12px"><b>Waiting to register</b>${G.map(g=>`<div class="row" style="margin:6px 0 0"><span>${esc(g.email)} as ${g.role}</span><button class="g s" data-revg="${esc(g.email)}">Revoke</button></div>`).join('')}</div>`:''}
+  <div class="tbl"><table><tr><th>Name</th><th>Email</th><th>Access</th><th>Joined</th><th></th></tr>
+  ${U.map(u=>`<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td><select data-ur="${u.id}" aria-label="Access for ${esc(u.name)}" ${u.id==m.id?'disabled':''}>${[['customer','Customer'],['staff','Staff'],['owner','Owner']].map(([v,n])=>`<option value="${v}" ${u.role==v?'selected':''}>${n}</option>`).join('')}</select></td>
+   <td>${new Date(u.joined).toLocaleDateString()}</td><td>${u.id==m.id?'<span class="mut">You</span>':`<button class="d s" data-rm="${u.id}">Remove</button>`}</td></tr>`).join('')}</table></div>
+  <p class="mut">Customers can only shop. Staff can see orders and inventory but not costs or profit. Owners can do everything, including this tab.</p>`;
+}
+function labelTables(){document.querySelectorAll('#app table').forEach(t=>{const h=[...t.querySelectorAll('th')].map(x=>x.textContent.trim());t.querySelectorAll('tr').forEach(r=>[...r.children].forEach((c,i)=>{if(c.tagName=='TD')c.dataset.l=h[i]||''}))})}
+new MutationObserver(labelTables).observe($('#app'),{childList:true,subtree:true});
+boot();
+</script>
+</body></html>
